@@ -16,9 +16,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="ReadMe.txt" />
-    <None Include="IDManTypeInfo.tlb">
-      <Filter>Header Files</Filter>
-    </None>
     <None Include="ClassDiagram1.cd" />
   </ItemGroup>
   <ItemGroup>
@@ -32,9 +29,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="IDManTypeInfo.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="IDManTypeInfo_i.c">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="NativeHost.h">

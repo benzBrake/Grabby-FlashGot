@@ -755,9 +755,7 @@ public:
 };
 
 
-#import "IDManTypeInfo.tlb" 
 #include "IDManTypeInfo.h"
-#include "IDManTypeInfo_i.c"  
 
 class DMSInternetDownloadManager :
 	public DMSupportCOM
@@ -787,8 +785,8 @@ public:
 		LinkInfo l;
 
 		ICIDMLinkTransmitter2* pIDM;
-		HRESULT hr = CoCreateInstance(CLSID_CIDMLinkTransmitter, NULL, CLSCTX_LOCAL_SERVER,
-					IID_ICIDMLinkTransmitter2, (void**)&pIDM);
+		HRESULT hr = CoCreateInstance(__uuidof(CIDMLinkTransmitter), NULL, CLSCTX_LOCAL_SERVER,
+					__uuidof(ICIDMLinkTransmitter2), (void**)&pIDM);
 		if (S_OK != hr) return;
 
 		if(lc < 2)

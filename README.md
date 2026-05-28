@@ -42,6 +42,8 @@ wxDownload Fast 0.6.0
 
 Xtreme Download Manager 7.2 (**updated**)
 
+Thunder 25.0.6.1188 (**new!**)
+
 ### The following download managers are still supported but are ancient. They don't even support HTTPS so only HTTP urls will work with these:
 
 FlashGet
@@ -65,7 +67,5 @@ Retriever (discontinued)
 Jdownloader (untested)
 
 pyLoad (untested)
-
-Thunder (untested)
 
 Download Master (untested)

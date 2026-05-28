@@ -28,6 +28,7 @@
 #include "FlashGot.h"
 #include "base64.hpp"
 #include <sstream>
+#include <winsock.h>
 
 using namespace std;
 using namespace ggicci;
@@ -848,6 +849,316 @@ public:
 };
 
 
+class DMSNeatDownloadManager :
+	public DMSupport
+{
+private:
+
+	static bool fileExists(const char *path)
+	{
+		struct stat statbuf;
+		return path && !stat(path, &statbuf);
+	}
+
+	static char *copyString(const char *value)
+	{
+		size_t len = strlen(value) + 1;
+		char *copy = new char[len];
+		strcpy_s(copy, len, value);
+		return copy;
+	}
+
+	static char *findFromUninstall(HKEY baseKey, const char *leafPath)
+	{
+		HKEY hk;
+		char *exe = NULL;
+		long res = RegOpenKeyEx(baseKey, leafPath, 0, KEY_QUERY_VALUE, &hk);
+		if(res != ERROR_SUCCESS)
+		{
+			res = RegOpenKeyEx(baseKey, leafPath, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &hk);
+		}
+		if(res == ERROR_SUCCESS)
+		{
+			long pathLen = 0;
+			if(RegQueryValueEx(hk, "InstallLocation", 0, NULL, NULL, (LPDWORD)&pathLen) == ERROR_SUCCESS)
+			{
+				char *installPath = new char[pathLen + MAX_PATH + 1];
+				if(RegQueryValueEx(hk, "InstallLocation", 0, NULL, (LPBYTE)installPath, (LPDWORD)&pathLen) == ERROR_SUCCESS)
+				{
+					size_t installPathLen = strlen(installPath);
+					if(installPathLen > 0 && installPath[installPathLen - 1] != '\\')
+					{
+						strcat_s(installPath, pathLen + MAX_PATH + 1, "\\");
+					}
+					strcat_s(installPath, pathLen + MAX_PATH + 1, "NeatDM.exe");
+					if(fileExists(installPath))
+					{
+						exe = installPath;
+						installPath = NULL;
+					}
+				}
+				delete [] installPath;
+			}
+			RegCloseKey(hk);
+		}
+		return exe;
+	}
+
+	static char *findProgram()
+	{
+		char *path = NULL;
+		if((path = findFromUninstall(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Neat Download Manager_is1")) ||
+			(path = findFromUninstall(HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Neat Download Manager_is1")) ||
+			(path = findFromUninstall(HKEY_LOCAL_MACHINE, "Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Neat Download Manager_is1")))
+		{
+			return path;
+		}
+
+		char candidate[MAX_PATH];
+		if(GetEnvironmentVariable("ProgramFiles(x86)", candidate, MAX_PATH))
+		{
+			strcat_s(candidate, MAX_PATH, "\\Neat Download Manager\\NeatDM.exe");
+			if(fileExists(candidate)) return copyString(candidate);
+		}
+		if(GetEnvironmentVariable("ProgramFiles", candidate, MAX_PATH))
+		{
+			strcat_s(candidate, MAX_PATH, "\\Neat Download Manager\\NeatDM.exe");
+			if(fileExists(candidate)) return copyString(candidate);
+		}
+
+		throw "Can't find Neat Download Manager executable";
+	}
+
+	static char *createCmdLine(char *path, bstr_t url)
+	{
+		char *urlChars = url;
+		size_t len = strlen(path) + strlen(urlChars) + 8;
+		char *cmdLine = new char[len];
+		sprintf_s(cmdLine, len, "\"%s\" \"%s\"", path, urlChars);
+		return cmdLine;
+	}
+
+	static std::string bstrToString(bstr_t value)
+	{
+		char *chars = value;
+		return chars ? std::string(chars) : std::string("");
+	}
+
+	static std::string stripFragment(std::string url)
+	{
+		size_t fragment = url.find('#');
+		size_t query = url.find('?');
+		if(fragment != std::string::npos && (query == std::string::npos || fragment > query))
+		{
+			url = url.substr(0, fragment);
+		}
+		return url;
+	}
+
+	static std::string getOrigin(const std::string &url)
+	{
+		size_t scheme = url.find("://");
+		if(scheme == std::string::npos) return "";
+
+		size_t originEnd = url.find('/', scheme + 3);
+		if(originEnd == std::string::npos) return url;
+		return url.substr(0, originEnd);
+	}
+
+	static std::string createDownloadMessage(const JobInfo *jobInfo, const LinkInfo &link)
+	{
+		std::string url = bstrToString(link.url);
+		std::string referer = stripFragment(bstrToString(jobInfo->referer));
+		if(referer.empty())
+		{
+			referer = stripFragment(bstrToString(jobInfo->dlpageReferer));
+		}
+		std::string cookies = bstrToString(link.cookies);
+		if(cookies.empty())
+		{
+			cookies = bstrToString(jobInfo->dlpageCookies);
+		}
+		std::string postdata = bstrToString(link.postdata);
+		std::string desc = bstrToString(link.desc);
+
+		std::string msg = "1:";
+		msg += postdata.empty() ? "GET" : "POST";
+		msg += "\r\n2:";
+		msg += url;
+		msg += "\r\n6:normal\r\n";
+
+		if(!desc.empty())
+		{
+			msg += "4:";
+			msg += desc;
+			msg += "\r\n";
+		}
+		if(!referer.empty())
+		{
+			std::string origin = getOrigin(referer);
+			if(!origin.empty())
+			{
+				msg += "Origin: ";
+				msg += origin;
+				msg += "\r\n";
+			}
+			msg += "Referer: ";
+			msg += referer;
+			msg += "\r\n5:";
+			msg += referer;
+			msg += "\r\n";
+		}
+		if(!cookies.empty())
+		{
+			msg += "Cookie: ";
+			msg += cookies;
+			msg += "\r\n";
+		}
+		if(!postdata.empty())
+		{
+			msg += "__0NeatPostData9__:";
+			msg += postdata;
+		}
+		return msg;
+	}
+
+	static bool sendAll(SOCKET sock, const char *data, int len)
+	{
+		int sent = 0;
+		while(sent < len)
+		{
+			int ret = send(sock, data + sent, len - sent, 0);
+			if(ret <= 0) return false;
+			sent += ret;
+		}
+		return true;
+	}
+
+	static bool websocketHandshake(SOCKET sock)
+	{
+		const char *request =
+			"GET /download HTTP/1.1\r\n"
+			"Host: 127.0.0.1:10007\r\n"
+			"Upgrade: websocket\r\n"
+			"Connection: Upgrade\r\n"
+			"Origin: moz-extension://64d3e6d6-8a71-4443-b60b-a9b12ff1ec14\r\n"
+			"Sec-WebSocket-Key: Rmxhc2hHb3RORE1LZXkxMg==\r\n"
+			"Sec-WebSocket-Version: 13\r\n"
+			"Sec-WebSocket-Protocol: neatextension.v1\r\n\r\n";
+
+		if(!sendAll(sock, request, (int)strlen(request))) return false;
+
+		char response[1024];
+		int len = recv(sock, response, sizeof(response) - 1, 0);
+		if(len <= 0) return false;
+		response[len] = '\0';
+		return strstr(response, " 101 ") != NULL;
+	}
+
+	static bool sendWebSocketText(SOCKET sock, const std::string &message)
+	{
+		if(message.size() > 118784) return false;
+
+		std::string frame;
+		frame.push_back((char)0x81);
+		if(message.size() <= 125)
+		{
+			frame.push_back((char)(0x80 | message.size()));
+		}
+		else if(message.size() <= 65535)
+		{
+			frame.push_back((char)(0x80 | 126));
+			frame.push_back((char)((message.size() >> 8) & 0xff));
+			frame.push_back((char)(message.size() & 0xff));
+		}
+		else
+		{
+			unsigned __int64 payloadLen = (unsigned __int64)message.size();
+			frame.push_back((char)(0x80 | 127));
+			for(int i = 7; i >= 0; i--)
+			{
+				frame.push_back((char)((payloadLen >> (i * 8)) & 0xff));
+			}
+		}
+
+		unsigned char mask[4] = { 0x46, 0x47, 0x4e, 0x44 };
+		frame.append((char *)mask, 4);
+		for(size_t i = 0; i < message.size(); i++)
+		{
+			frame.push_back((char)(message[i] ^ mask[i % 4]));
+		}
+
+		return sendAll(sock, frame.c_str(), (int)frame.size());
+	}
+
+	static bool dispatchByWebSocket(const JobInfo *jobInfo)
+	{
+		WSADATA wsaData;
+		if(WSAStartup(MAKEWORD(1, 1), &wsaData) != 0) return false;
+
+		bool ok = false;
+		SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if(sock != INVALID_SOCKET)
+		{
+			sockaddr_in addr;
+			memset(&addr, 0, sizeof(addr));
+			addr.sin_family = AF_INET;
+			addr.sin_port = htons(10007);
+			addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+			if(connect(sock, (sockaddr *)&addr, sizeof(addr)) == 0 && websocketHandshake(sock))
+			{
+				ok = true;
+				for(int i = 0; i < jobInfo->dlcount; i++)
+				{
+					ok = sendWebSocketText(sock, createDownloadMessage(jobInfo, jobInfo->links[i])) && ok;
+				}
+			}
+			closesocket(sock);
+		}
+
+		WSACleanup();
+		return ok;
+	}
+
+	static void dispatchByCommandLine(const JobInfo *jobInfo)
+	{
+		char *path = findProgram();
+		BOOL ret = TRUE;
+
+		for(int i = 0; i < jobInfo->dlcount; i++)
+		{
+			char *cmdLine = createCmdLine(path, jobInfo->links[i].url);
+			ret = createProcess(cmdLine, NULL) && ret;
+			delete [] cmdLine;
+		}
+
+		delete [] path;
+		if(!ret) throw "Can't launch Neat Download Manager";
+	}
+
+public:
+
+	const char * getName() { return "Neat Download Manager"; }
+
+	void check()
+	{
+		char *path = findProgram();
+		delete [] path;
+	}
+
+	void dispatch(const JobInfo *jobInfo)
+	{
+		if(jobInfo->dlcount < 1) return;
+
+		if(!dispatchByWebSocket(jobInfo))
+		{
+			dispatchByCommandLine(jobInfo);
+		}
+	}
+};
+
+
 class DMSLeechGetBase :
 	public DMSupportCOM
 {
@@ -1648,6 +1959,7 @@ void DMSFactory::registerAll()
 	add(new DMSLeechGet());
 	add(new DMSMass_Downloader());
 	add(new DMSNetAnts());
+	add(new DMSNeatDownloadManager());
 	//add(new DMSNet_Transport());
 	//add(new DMSNet_Transport2());
 	//add(new DMSOrbit());

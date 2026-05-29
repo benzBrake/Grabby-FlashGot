@@ -944,6 +944,35 @@ private:
 		return chars ? std::string(chars) : std::string("");
 	}
 
+	static int hexValue(char c)
+	{
+		if(c >= '0' && c <= '9') return c - '0';
+		if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+		if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+		return -1;
+	}
+
+	static std::string urlDecode(std::string value)
+	{
+		std::string decoded;
+		for(size_t i = 0; i < value.size(); i++)
+		{
+			if(value[i] == '%' && i + 2 < value.size())
+			{
+				int hi = hexValue(value[i + 1]);
+				int lo = hexValue(value[i + 2]);
+				if(hi >= 0 && lo >= 0)
+				{
+					decoded.push_back((char)((hi << 4) | lo));
+					i += 2;
+					continue;
+				}
+			}
+			decoded.push_back(value[i]);
+		}
+		return decoded;
+	}
+
 	static std::string stripFragment(std::string url)
 	{
 		size_t fragment = url.find('#');
@@ -965,6 +994,37 @@ private:
 		return url.substr(0, originEnd);
 	}
 
+	static std::string getFileNameFromUrl(std::string url)
+	{
+		url = stripFragment(url);
+		size_t query = url.find('?');
+		if(query != std::string::npos)
+		{
+			url = url.substr(0, query);
+		}
+
+		size_t slash = url.find_last_of("/\\");
+		std::string filename = slash == std::string::npos ? url : url.substr(slash + 1);
+		filename = urlDecode(filename);
+		return filename.empty() ? "download" : filename;
+	}
+
+	static std::string getEffectiveFileName(const LinkInfo &link, const std::string &url)
+	{
+		std::string filename = bstrToString(link.filename);
+		std::string extension = bstrToString(link.extension);
+		if(!filename.empty())
+		{
+			if(!extension.empty() && filename.find_last_of('.') == std::string::npos)
+			{
+				if(extension[0] != '.') filename += ".";
+				filename += extension;
+			}
+			return filename;
+		}
+		return getFileNameFromUrl(url);
+	}
+
 	static std::string createDownloadMessage(const JobInfo *jobInfo, const LinkInfo &link)
 	{
 		std::string url = bstrToString(link.url);
@@ -980,6 +1040,10 @@ private:
 		}
 		std::string postdata = bstrToString(link.postdata);
 		std::string desc = bstrToString(link.desc);
+		if(desc.empty())
+		{
+			desc = getEffectiveFileName(link, url);
+		}
 
 		std::string msg = "1:";
 		msg += postdata.empty() ? "GET" : "POST";
@@ -987,12 +1051,9 @@ private:
 		msg += url;
 		msg += "\r\n6:normal\r\n";
 
-		if(!desc.empty())
-		{
-			msg += "4:";
-			msg += desc;
-			msg += "\r\n";
-		}
+		msg += "4:";
+		msg += desc;
+		msg += "\r\n";
 		if(!referer.empty())
 		{
 			std::string origin = getOrigin(referer);
@@ -1121,6 +1182,32 @@ private:
 		return ok;
 	}
 
+	static bool waitAndDispatchByWebSocket(const JobInfo *jobInfo)
+	{
+		for(int elapsed = 0; elapsed < DMS_POLL_TIMEOUT; elapsed += DMS_POLL_DELAY)
+		{
+			if(dispatchByWebSocket(jobInfo)) return true;
+			Sleep(DMS_POLL_DELAY);
+		}
+		return dispatchByWebSocket(jobInfo);
+	}
+
+	static void launchProgram()
+	{
+		char *path = findProgram();
+		SHELLEXECUTEINFO sei;
+		ZeroMemory(&sei, sizeof(sei));
+		sei.cbSize = sizeof(sei);
+		sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+		sei.lpFile = path;
+		sei.nShow = SW_SHOWNORMAL;
+
+		BOOL ret = ShellExecuteEx(&sei);
+		if(ret && sei.hProcess) CloseHandle(sei.hProcess);
+		delete [] path;
+		if(!ret) throw "Can't launch Neat Download Manager";
+	}
+
 	static void dispatchByCommandLine(const JobInfo *jobInfo)
 	{
 		char *path = findProgram();
@@ -1153,7 +1240,11 @@ public:
 
 		if(!dispatchByWebSocket(jobInfo))
 		{
-			dispatchByCommandLine(jobInfo);
+			launchProgram();
+			if(!waitAndDispatchByWebSocket(jobInfo))
+			{
+				dispatchByCommandLine(jobInfo);
+			}
 		}
 	}
 };
